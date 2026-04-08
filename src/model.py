@@ -11,15 +11,24 @@ class PatchEmbedding(nn.Module):
     From the paper (page 4): "We pad S repeated numbers of the last value to the end
     of the original sequence before patching." This gives N = floor((L-P)/S) + 2.
     With L=336, P=16, S=8: N = floor(320/8) + 2 = 42 patches (PatchTST/42).
+
+    For self-supervised (non-overlapping, S=P): no padding needed when floor((L-P)/S)+1
+    already gives the expected count (e.g. L=512, P=12 → 42 patches without padding).
     """
 
-    def __init__(self, seq_len: int, patch_len: int, stride: int, d_model: int):
+    def __init__(self, seq_len: int, patch_len: int, stride: int, d_model: int,
+                 padding: bool = True):
         super().__init__()
         self.patch_len = patch_len
         self.stride = stride
-        # Paper formula: pad S values at the end, giving N = floor((L-P)/S) + 2
-        self.pad_len = stride  # always pad by stride (paper says "pad S repeated numbers")
-        self.n_patches = (seq_len - patch_len) // stride + 2
+        if padding:
+            # Paper formula: pad S values, N = floor((L-P)/S) + 2
+            self.pad_len = stride
+            self.n_patches = (seq_len - patch_len) // stride + 2
+        else:
+            # No padding: N = floor((L-P)/S) + 1
+            self.pad_len = 0
+            self.n_patches = (seq_len - patch_len) // stride + 1
         self.proj = nn.Linear(patch_len, d_model)
         self.pos_enc = nn.Parameter(torch.randn(1, self.n_patches, d_model) * 0.02)
 
@@ -31,8 +40,8 @@ class PatchEmbedding(nn.Module):
             embedded: (batch, n_patches, d_model)
             raw_patches: (batch, n_patches, patch_len) — for self-supervised target
         """
-        # Pad S values at the end (replicate last value, as described in paper)
-        x = F.pad(x, (0, self.pad_len), mode='replicate')
+        if self.pad_len > 0:
+            x = F.pad(x, (0, self.pad_len), mode='replicate')
         # Unfold into patches: (batch, 1, seq_len+S) -> (batch, 1, n_patches, patch_len)
         raw_patches = x.unfold(dimension=2, size=self.patch_len, step=self.stride)
         raw_patches = raw_patches.squeeze(1)  # (batch, n_patches, patch_len)
@@ -169,7 +178,8 @@ class PatchTSTForPretrain(nn.Module):
                  dropout: float = 0.2, n_layers: int = 3, mask_ratio: float = 0.4):
         super().__init__()
         self.mask_ratio = mask_ratio
-        self.patch_embed = PatchEmbedding(seq_len, patch_len, stride, d_model)
+        # No padding for pretrain — non-overlapping patches don't need it
+        self.patch_embed = PatchEmbedding(seq_len, patch_len, stride, d_model, padding=False)
         self.encoder = PatchTSTEncoder(d_model, nhead, dim_feedforward, dropout, n_layers)
         self.recon_head = nn.Linear(d_model, patch_len)
 

@@ -113,7 +113,8 @@ def main():
     device = args.device
     run_start = time.time()
     print(f"\n{'='*60}")
-    print(f"PatchTST Supervised | ETTh1 | pred_len={args.pred_len}")
+    dataset_name = "Weather" if "weather" in args.data_path.lower() else "ETTh1"
+    print(f"PatchTST Supervised | {dataset_name} | pred_len={args.pred_len}")
     print(f"{'='*60}")
     print(f"Device: {device}, Seed: {args.seed}")
 
@@ -155,7 +156,8 @@ def main():
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=3, min_lr=1e-6
     )
-    checkpoint_path = f"results/checkpoint_sup_T{args.pred_len}.pt"
+    ds = "weather" if "weather" in args.data_path.lower() else "etth1"
+    checkpoint_path = f"results/checkpoint_sup_{ds}_T{args.pred_len}.pt"
     os.makedirs("results", exist_ok=True)
     early_stopping = EarlyStopping(patience=args.patience, save_path=checkpoint_path)
 
@@ -190,9 +192,13 @@ def main():
     early_stopping.load_best(model)
     test_mse, test_mae = test_metrics(model, test_loader, device)
 
-    # PatchTST/42 from Table 3 (L=336, our setting). /64 uses L=512.
-    paper_results = {96: (0.375, 0.399), 192: (0.414, 0.421),
-                     336: (0.431, 0.436), 720: (0.449, 0.466)}
+    # Paper Table 3 reference results (PatchTST/42 for ETTh1, PatchTST/64 for Weather)
+    paper_refs = {
+        "etth1": {96: (0.375, 0.399), 192: (0.414, 0.421), 336: (0.431, 0.436), 720: (0.449, 0.466)},
+        "weather": {96: (0.152, 0.199), 192: (0.197, 0.243), 336: (0.249, 0.283), 720: (0.320, 0.335)},
+    }
+    dataset_key = "weather" if "weather" in args.data_path.lower() else "etth1"
+    paper_results = paper_refs.get(dataset_key, {})
     paper_mse, paper_mae = paper_results.get(args.pred_len, (None, None))
 
     total_time = time.time() - run_start
@@ -232,7 +238,7 @@ def main():
         "sample_targets": sample_targets,
         "sample_inputs": sample_inputs,
     }
-    save_results(results, f"results/supervised_T{args.pred_len}.json")
+    save_results(results, f"results/{ds}_supervised_T{args.pred_len}.json")
 
     # Clean up checkpoint
     if os.path.exists(checkpoint_path):

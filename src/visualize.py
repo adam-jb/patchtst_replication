@@ -49,17 +49,17 @@ def load_json(path: str) -> dict | None:
     return None
 
 
-def generate_supervised_report(results_dir: str = "results") -> None:
+def generate_supervised_report(results_dir: str = "results", dataset: str = "etth1") -> None:
     """Generate supervised_results.html with comparison tables, bar charts, scaling plots, training curves."""
 
     results = {}
     for T in HORIZONS:
-        r = load_json(os.path.join(results_dir, f"supervised_T{T}.json"))
+        r = load_json(os.path.join(results_dir, f"{dataset}_supervised_T{T}.json"))
         if r:
             results[T] = r
 
     if not results:
-        print("No supervised results found.")
+        print(f"No supervised results found for {dataset}.")
         return
 
     # Create multi-panel figure
@@ -174,23 +174,23 @@ def generate_supervised_report(results_dir: str = "results") -> None:
 </body>
 </html>"""
 
-    out_path = os.path.join(results_dir, "supervised_results.html")
+    out_path = os.path.join(results_dir, f"{dataset}_supervised_results.html")
     with open(out_path, "w") as f:
         f.write(html_content)
     print(f"Supervised report: {out_path}")
 
 
-def generate_forecast_report(results_dir: str = "results") -> None:
+def generate_forecast_report(results_dir: str = "results", dataset: str = "etth1") -> None:
     """Generate forecasts.html with sample prediction plots."""
 
     results = {}
     for T in HORIZONS:
-        r = load_json(os.path.join(results_dir, f"supervised_T{T}.json"))
+        r = load_json(os.path.join(results_dir, f"{dataset}_supervised_T{T}.json"))
         if r and "sample_predictions" in r:
             results[T] = r
 
     if not results:
-        print("No forecast samples found.")
+        print(f"No forecast samples found for {dataset}.")
         return
 
     horizons_found = sorted(results.keys())
@@ -252,13 +252,13 @@ def generate_forecast_report(results_dir: str = "results") -> None:
 </body>
 </html>"""
 
-    out_path = os.path.join(results_dir, "forecasts.html")
+    out_path = os.path.join(results_dir, f"{dataset}_forecasts.html")
     with open(out_path, "w") as f:
         f.write(html_content)
     print(f"Forecast report: {out_path}")
 
 
-def generate_selfsup_report(results_dir: str = "results") -> None:
+def generate_selfsup_report(results_dir: str = "results", dataset: str = "etth1") -> None:
     """Generate selfsup_results.html comparing supervised, linear probe, and fine-tuned."""
 
     # Load all results
@@ -266,17 +266,17 @@ def generate_selfsup_report(results_dir: str = "results") -> None:
     probe_results = {}
     ft_results = {}
     for T in HORIZONS:
-        r = load_json(os.path.join(results_dir, f"supervised_T{T}.json"))
+        r = load_json(os.path.join(results_dir, f"{dataset}_supervised_T{T}.json"))
         if r:
             sup_results[T] = r
-        r = load_json(os.path.join(results_dir, f"selfsup_linear_probe_T{T}.json"))
+        r = load_json(os.path.join(results_dir, f"{dataset}_selfsup_linear_probe_T{T}.json"))
         if r:
             probe_results[T] = r
-        r = load_json(os.path.join(results_dir, f"selfsup_finetune_T{T}.json"))
+        r = load_json(os.path.join(results_dir, f"{dataset}_selfsup_finetune_T{T}.json"))
         if r:
             ft_results[T] = r
 
-    pretrain_hist = load_json(os.path.join(results_dir, "pretrain_history.json"))
+    pretrain_hist = load_json(os.path.join(results_dir, f"{dataset}_pretrain_history.json"))
 
     if not (probe_results or ft_results):
         print("No self-supervised results found.")
@@ -423,7 +423,7 @@ def generate_selfsup_report(results_dir: str = "results") -> None:
 </body>
 </html>"""
 
-    out_path = os.path.join(results_dir, "selfsup_results.html")
+    out_path = os.path.join(results_dir, f"{dataset}_selfsup_results.html")
     with open(out_path, "w") as f:
         f.write(html_content)
     print(f"Self-supervised report: {out_path}")
@@ -485,13 +485,14 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--results_dir", type=str, default="results")
+    parser.add_argument("--dataset", type=str, default="etth1", choices=["etth1", "weather"])
     parser.add_argument("--mode", type=str, default="all",
                         choices=["all", "supervised", "forecasts", "selfsup"])
     args = parser.parse_args()
 
     if args.mode in ("all", "supervised"):
-        generate_supervised_report(args.results_dir)
+        generate_supervised_report(args.results_dir, args.dataset)
     if args.mode in ("all", "forecasts"):
-        generate_forecast_report(args.results_dir)
+        generate_forecast_report(args.results_dir, args.dataset)
     if args.mode in ("all", "selfsup"):
-        generate_selfsup_report(args.results_dir)
+        generate_selfsup_report(args.results_dir, args.dataset)

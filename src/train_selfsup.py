@@ -127,13 +127,19 @@ def transfer_weights(pretrain_model: PatchTSTForPretrain, sup_model: PatchTST) -
         print(f"  Transferred positional encoding ({n_sup} patches)")
 
 
+def _ds_prefix(args) -> str:
+    return "weather" if "weather" in args.data_path.lower() else "etth1"
+
+
 def run_pretrain(args) -> str:
     """Run masked patch prediction pretraining. Returns path to saved checkpoint."""
     set_seed(args.seed)
     device = args.device
+    ds = _ds_prefix(args)
 
     print(f"\n{'='*60}")
-    print(f"Self-Supervised Pretraining | ETTh1")
+    dataset_name = "Weather" if "weather" in args.data_path.lower() else "ETTh1"
+    print(f"Self-Supervised Pretraining | {dataset_name}")
     print(f"{'='*60}")
 
     # Data — use larger batch size and pretrain_seq_len for pretraining
@@ -152,13 +158,13 @@ def run_pretrain(args) -> str:
         dropout=args.dropout, n_layers=args.n_layers, mask_ratio=args.mask_ratio
     ).to(device)
     print(f"Pretrain model params: {sum(p.numel() for p in model.parameters()):,}")
-    print(f"Patches: {model.patch_embed.n_patches} (stride={args.patch_len}), "
+    print(f"Patches: {model.patch_embed.n_patches} (P={pretrain_patch_len}, S={pretrain_patch_len}), "
           f"Mask ratio: {args.mask_ratio}")
 
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     os.makedirs("results", exist_ok=True)
-    checkpoint_path = "results/checkpoint_pretrain.pt"
+    checkpoint_path = f"results/checkpoint_pretrain_{ds}.pt"
     early_stopping = EarlyStopping(patience=args.patience, save_path=checkpoint_path)
 
     history = []
@@ -183,7 +189,7 @@ def run_pretrain(args) -> str:
             break
 
     early_stopping.load_best(model)
-    save_results({"pretrain_history": history}, "results/pretrain_history.json")
+    save_results({"pretrain_history": history}, f"results/{ds}_pretrain_history.json")
     return checkpoint_path
 
 
@@ -229,7 +235,8 @@ def run_finetune(args, pretrain_checkpoint: str, mode: str = "finetune") -> dict
 
     criterion = nn.MSELoss()
     os.makedirs("results", exist_ok=True)
-    checkpoint_path = f"results/checkpoint_{mode}_T{args.pred_len}.pt"
+    ds = _ds_prefix(args)
+    checkpoint_path = f"results/checkpoint_{ds}_{mode}_T{args.pred_len}.pt"
     history = []
 
     if mode == "linear_probe":
@@ -327,7 +334,12 @@ def run_finetune(args, pretrain_checkpoint: str, mode: str = "finetune") -> dict
         "test_metrics": {"mse": round(test_mse_val, 6), "mae": round(test_mae_val, 6)},
         "paper_metrics": {"mse": paper_mse, "mae": paper_mae},
     }
-    save_results(results, f"results/selfsup_{mode}_T{args.pred_len}.json")
+    save_results(results, f"results/{ds}_selfsup_{mode}_T{args.pred_len}.json")
+
+    # Clean up checkpoint
+    if os.path.exists(checkpoint_path):
+        os.remove(checkpoint_path)
+
     return results
 
 
@@ -374,6 +386,11 @@ def main():
 
     if args.mode in ("finetune", "both"):
         run_finetune(args, pretrain_checkpoint, mode="finetune")
+
+    # Clean up pretrain checkpoint
+    if os.path.exists(pretrain_checkpoint):
+        os.remove(pretrain_checkpoint)
+        print(f"Cleaned up pretrain checkpoint: {pretrain_checkpoint}")
 
 
 if __name__ == "__main__":
