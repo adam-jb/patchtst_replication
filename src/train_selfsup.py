@@ -67,6 +67,7 @@ def train_supervised_epoch(model: nn.Module, loader, criterion, optimizer,
         loss = criterion(pred, y)
         optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         total_loss += loss.item()
         n_batches += 1
@@ -104,19 +105,26 @@ def test_metrics(model: nn.Module, loader, device: str) -> tuple[float, float]:
 def transfer_weights(pretrain_model: PatchTSTForPretrain, sup_model: PatchTST) -> None:
     """Transfer encoder weights from pretrained model to supervised model.
 
-    Handles stride mismatch: pretrained uses stride=16 (21 patches),
-    supervised uses stride=8 (41 patches). Positional encoding is re-initialized.
-    Patch projection and encoder layers are transferred.
+    Handles mismatches between pretrain and supervised architectures:
+    - Patch projection: transferred only if patch_len matches, else re-initialized
+    - Positional encoding: transferred only if patch count matches, else re-initialized
+    - Encoder layers: always transferred (same d_model/nhead/ff)
     """
-    # Transfer patch projection weights
-    sup_model.patch_embed.proj.load_state_dict(pretrain_model.patch_embed.proj.state_dict())
-    print(f"  Transferred patch projection weights")
+    # Transfer patch projection weights (only if patch_len matches)
+    pretrain_proj = pretrain_model.patch_embed.proj
+    sup_proj = sup_model.patch_embed.proj
+    if pretrain_proj.in_features == sup_proj.in_features:
+        sup_proj.load_state_dict(pretrain_proj.state_dict())
+        print(f"  Transferred patch projection weights (P={sup_proj.in_features})")
+    else:
+        print(f"  Patch projection: pretrain P={pretrain_proj.in_features} != "
+              f"supervised P={sup_proj.in_features} — re-initialized")
 
     # Transfer encoder weights
     sup_model.encoder.load_state_dict(pretrain_model.encoder.state_dict())
     print(f"  Transferred encoder weights ({len(sup_model.encoder.layers)} layers)")
 
-    # Positional encoding: different sizes due to stride change, re-initialize
+    # Positional encoding: transfer only if patch count matches
     n_pretrain = pretrain_model.patch_embed.n_patches
     n_sup = sup_model.patch_embed.n_patches
     if n_pretrain != n_sup:
@@ -215,9 +223,10 @@ def run_finetune(args, pretrain_checkpoint: str, mode: str = "finetune") -> dict
         args.data_path, args.seq_len, args.pred_len, args.batch_size
     )
 
-    # Load pretrained model
+    # Load pretrained model with PRETRAIN architecture (P=12, S=12, L=512)
     pretrain_model = PatchTSTForPretrain(
-        seq_len=args.seq_len, patch_len=args.patch_len, stride=args.patch_len,
+        seq_len=args.pretrain_seq_len, patch_len=args.pretrain_patch_len,
+        stride=args.pretrain_patch_len,
         d_model=args.d_model, nhead=args.nhead, dim_feedforward=args.dim_feedforward,
         dropout=args.dropout, n_layers=args.n_layers, mask_ratio=args.mask_ratio
     )
@@ -319,13 +328,28 @@ def run_finetune(args, pretrain_checkpoint: str, mode: str = "finetune") -> dict
     early_stopping.load_best(sup_model)
     test_mse_val, test_mae_val = test_metrics(sup_model, test_loader, device)
 
-    paper_results = {96: (0.370, 0.400), 192: (0.413, 0.429),
-                     336: (0.422, 0.440), 720: (0.447, 0.468)}
-    paper_mse, paper_mae = paper_results.get(args.pred_len, (None, None))
+    # Paper Table 4 reference values (dataset-aware)
+    paper_refs = {
+        "weather": {
+            "linear_probe": {96: (0.158, 0.209), 192: (0.203, 0.249), 336: (0.251, 0.285), 720: (0.321, 0.336)},
+            "finetune": {96: (0.144, 0.193), 192: (0.190, 0.236), 336: (0.244, 0.280), 720: (0.320, 0.335)},
+            "supervised": {96: (0.152, 0.199), 192: (0.197, 0.243), 336: (0.249, 0.283), 720: (0.320, 0.335)},
+        },
+        "etth1": {
+            # No self-supervised in paper for ETTh1; show supervised for reference
+            "linear_probe": {96: (0.375, 0.399), 192: (0.414, 0.421), 336: (0.431, 0.436), 720: (0.449, 0.466)},
+            "finetune": {96: (0.375, 0.399), 192: (0.414, 0.421), 336: (0.431, 0.436), 720: (0.449, 0.466)},
+            "supervised": {96: (0.375, 0.399), 192: (0.414, 0.421), 336: (0.431, 0.436), 720: (0.449, 0.466)},
+        },
+    }
+    ds_refs = paper_refs.get(ds, paper_refs["etth1"])
+    mode_refs = ds_refs.get(mode, ds_refs["supervised"])
+    paper_mse, paper_mae = mode_refs.get(args.pred_len, (None, None))
+    sup_mse, sup_mae = ds_refs["supervised"].get(args.pred_len, (None, None))
 
     print(f"\nTEST RESULTS ({mode}) | pred_len={args.pred_len}")
-    print(f"  MSE: {test_mse_val:.4f}  (paper supervised: {paper_mse})")
-    print(f"  MAE: {test_mae_val:.4f}  (paper supervised: {paper_mae})")
+    print(f"  MSE: {test_mse_val:.4f}  (paper {mode}: {paper_mse}, paper supervised: {sup_mse})")
+    print(f"  MAE: {test_mae_val:.4f}  (paper {mode}: {paper_mae}, paper supervised: {sup_mae})")
 
     results = {
         "mode": mode,
@@ -374,7 +398,8 @@ def main():
     args = parser.parse_args()
 
     # Step 1: Pretraining
-    pretrain_checkpoint = "results/checkpoint_pretrain.pt"
+    ds = _ds_prefix(args)
+    pretrain_checkpoint = f"results/checkpoint_pretrain_{ds}.pt"
     if not args.skip_pretrain:
         pretrain_checkpoint = run_pretrain(args)
     else:
@@ -387,10 +412,8 @@ def main():
     if args.mode in ("finetune", "both"):
         run_finetune(args, pretrain_checkpoint, mode="finetune")
 
-    # Clean up pretrain checkpoint
-    if os.path.exists(pretrain_checkpoint):
-        os.remove(pretrain_checkpoint)
-        print(f"Cleaned up pretrain checkpoint: {pretrain_checkpoint}")
+    # Keep pretrain checkpoint for later phases (fine-tuning)
+    print(f"Pretrain checkpoint preserved at: {pretrain_checkpoint}")
 
 
 if __name__ == "__main__":
